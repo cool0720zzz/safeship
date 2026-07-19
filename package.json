@@ -1,8 +1,30 @@
 {
   "name": "safeship",
-  "private": true,
-  "version": "0.0.1",
-  "description": "SafeShip — 바이브코더를 위한 Git 안전 + 배포 프리플라이트 + 비용 가드",
+  "version": "0.1.0",
+  "description": "바이브코더용 배포 안전벨트 — git push 직전 Git안전·시크릿·배포·비용 자동 점검 (관제사 NOVA)",
+  "license": "MIT",
+  "author": "cool0720zzz",
+  "homepage": "https://github.com/cool0720zzz/safeship#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cool0720zzz/safeship.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cool0720zzz/safeship/issues"
+  },
+  "keywords": [
+    "git-hook",
+    "pre-push",
+    "secret-scanning",
+    "deploy",
+    "preflight",
+    "cost-guard",
+    "vibe-coding",
+    "safeship"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "workspaces": [
     "packages/*"
   ],
