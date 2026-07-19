@@ -1,0 +1,27 @@
+{
+  "name": "safeship",
+  "private": true,
+  "version": "0.0.1",
+  "description": "SafeShip — 바이브코더를 위한 Git 안전 + 배포 프리플라이트 + 비용 가드",
+  "workspaces": [
+    "packages/*"
+  ],
+  "bin": {
+    "safeship": "bin/safeship.cjs"
+  },
+  "files": [
+    "bin"
+  ],
+  "scripts": {
+    "build": "tsc -b packages/core packages/cli",
+    "bundle": "esbuild packages/cli/src/index.ts --bundle --platform=node --format=cjs --target=node18 --alias:@safeship/core=./packages/core/src/index.ts --outfile=bin/safeship.cjs && node -e \"const fs=require('fs');fs.copyFileSync('webui/cockpit.html','bin/cockpit.html');if(fs.existsSync('webui/props')){fs.mkdirSync('bin/props',{recursive:true});for(const f of fs.readdirSync('webui/props'))fs.copyFileSync('webui/props/'+f,'bin/props/'+f);}\"",
+    "prepare": "npm run bundle",
+    "scan": "node packages/cli/dist/index.js scan"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "esbuild": "^0.25.12",
+    "puppeteer-core": "^25.3.0",
+    "typescript": "^5.6.0"
+  }
+}

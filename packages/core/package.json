@@ -1,0 +1,14 @@
+{
+  "name": "@safeship/core",
+  "version": "0.0.1",
+  "description": "SafeShip 코어 엔진 — 레포 스캐너, 룰 레지스트리, findings 스키마",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  }
+}

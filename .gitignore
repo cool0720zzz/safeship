@@ -1,0 +1,8 @@
+node_modules/
+dist/
+bin/
+target/
+*.log
+.lazyweb/
+.DS_Store
+.omc/

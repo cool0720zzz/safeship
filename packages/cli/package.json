@@ -1,0 +1,15 @@
+{
+  "name": "safeship",
+  "version": "0.0.1",
+  "description": "SafeShip CLI — 배포 전 안전 점검 (npx safeship scan)",
+  "type": "module",
+  "bin": {
+    "safeship": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@safeship/core": "0.0.1"
+  }
+}
