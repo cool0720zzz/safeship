@@ -457,12 +457,18 @@ function findOverlayExe(): string | null {
   const env = process.env.SAFESHIP_OVERLAY_EXE;
   if (env && fs.existsSync(env)) return env;
   const base = moduleDir();
-  const names = process.platform === 'win32' ? ['desktop.exe'] : ['desktop'];
+  const names = process.platform === 'win32' ? ['SafeShip.exe', 'desktop.exe'] : ['SafeShip', 'desktop'];
   const roots = [
+    // 레포에서 직접 빌드한 경우
     path.join(base, '..', 'desktop', 'src-tauri', 'target', 'release'),
     path.join(base, '..', 'desktop', 'src-tauri', 'target', 'debug'),
     path.join(base, '..', '..', 'desktop', 'src-tauri', 'target', 'release'),
   ];
+  if (process.platform === 'win32') {
+    // 설치 파일(NSIS)로 설치한 경우의 표준 위치
+    if (process.env.LOCALAPPDATA) roots.push(path.join(process.env.LOCALAPPDATA, 'SafeShip'));
+    if (process.env.ProgramFiles) roots.push(path.join(process.env.ProgramFiles, 'SafeShip'));
+  }
   for (const r of roots) for (const n of names) {
     const p = path.join(r, n);
     if (fs.existsSync(p)) return p;
