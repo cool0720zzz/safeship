@@ -4,6 +4,8 @@
  * M1에서 init(훅 설치)·관제탑 서버가 추가된다.
  */
 import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { runScan } from '@safeship/core';
 import type { Finding, Report } from '@safeship/core';
 import { openCockpit, openOverlayApp, renderDesktopIndex } from './web.js';
@@ -16,6 +18,54 @@ const YELLOW = '\x1b[33m';
 const GREEN = '\x1b[32m';
 const DIM = '\x1b[2m';
 const CYAN = '\x1b[36m';
+
+/** 홈 폴더 설정 파일 — 앱의 설정 버튼과 `safeship config`가 같은 곳에 쓴다. */
+function homeConfigPath(): string {
+  return path.join(os.homedir(), '.safeship.json');
+}
+
+/** safeship config ui <full|mini> — 기본 표시 방식 저장. 인자 없으면 현재 값 출력. */
+function runConfig(args: string[]): number {
+  const file = homeConfigPath();
+  const read = (): Record<string, unknown> => {
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; }
+  };
+  if (args[1] !== 'ui') {
+    const cur = (read().ui as string) ?? 'full';
+    console.log(`관제탑 표시 방식: ${BOLD}${cur}${RESET} ${DIM}(${file})${RESET}`);
+    console.log(`${DIM}바꾸려면: safeship config ui mini  |  safeship config ui full${RESET}`);
+    return 0;
+  }
+  const mode = args[2];
+  if (mode !== 'full' && mode !== 'mini') {
+    console.error('사용법: safeship config ui <full|mini>');
+    return 2;
+  }
+  const cfg = read();
+  cfg.ui = mode;
+  fs.writeFileSync(file, JSON.stringify(cfg, null, 2), 'utf8');
+  const label = mode === 'mini' ? '미니 카드(작업표시줄 위)' : '전체 UI(오른쪽 패널)';
+  console.log(`${GREEN}✅ 관제탑 표시 방식을 ${BOLD}${label}${RESET}${GREEN}로 바꿨어요.${RESET}`);
+  console.log(`${DIM}다음 push부터 적용됩니다. (${file})${RESET}`);
+  return 0;
+}
+
+/** 관제탑을 어떤 모양으로 띄울지: 전체 UI(full) / 작업표시줄 위 미니 카드(mini).
+ *  우선순위 — 명령행 --ui > 레포 .safeship.json > 홈 ~/.safeship.json > full */
+function resolveUiMode(dir: string, args: string[]): 'full' | 'mini' {
+  const i = args.indexOf('--ui');
+  const flag = i >= 0 ? args[i + 1] : args.find((a) => a.startsWith('--ui='))?.split('=')[1];
+  if (flag === 'mini' || flag === 'full') return flag;
+  if (args.includes('--mini')) return 'mini';
+
+  for (const cfg of [path.join(dir, '.safeship.json'), path.join(os.homedir(), '.safeship.json')]) {
+    try {
+      const ui = JSON.parse(fs.readFileSync(cfg, 'utf8')).ui;
+      if (ui === 'mini' || ui === 'full') return ui;
+    } catch { /* 없거나 깨진 설정은 그냥 건너뛴다 */ }
+  }
+  return 'full';
+}
 
 function sevBadge(f: Finding): string {
   switch (f.severity) {
@@ -87,10 +137,17 @@ function main(): number {
     return 0;
   }
 
+  if (cmd === 'config') return runConfig(args);
+
   if (cmd !== 'scan') {
-    console.error(`알 수 없는 명령: ${cmd}\n사용법: safeship scan [폴더] [--json|--web]  |  safeship init`);
+    console.error(
+      `알 수 없는 명령: ${cmd}\n` +
+      `사용법: safeship scan [폴더] [--json|--web|--ui mini|full]  |  safeship init  |  safeship config ui <full|mini>`,
+    );
     return 2;
   }
+
+  const mini = resolveUiMode(dir, args) === 'mini';
 
   const report = runScan(dir);
 
@@ -111,8 +168,8 @@ function main(): number {
   if (gate) {
     // 오버레이 앱을 먼저 시도, 실패 시 브라우저 관제탑으로 폴백
     const showPanel = (celebrate: boolean): string => {
-      if (openOverlayApp(report, { celebrate })) return 'overlay';
-      return openCockpit(report, { celebrate }) ? 'browser' : 'none';
+      if (openOverlayApp(report, { celebrate, mini })) return 'overlay';
+      return openCockpit(report, { celebrate, mini }) ? 'browser' : 'none';
     };
     if (isGo) {
       const how = showPanel(true);
@@ -133,7 +190,7 @@ function main(): number {
 
   // 일반 scan: --web이면 브라우저도 연다
   if (args.includes('--web')) {
-    const file = openCockpit(report);
+    const file = openCockpit(report, { mini });
     if (file) {
       console.log(`\n${BOLD}🛰  관제탑을 브라우저로 열었어요${RESET} ${DIM}${file}${RESET}`);
       console.log(`${DIM}스크롤하며 NOVA의 브리핑을 확인하세요. 터미널 요약은 아래에.${RESET}`);

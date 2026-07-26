@@ -43,19 +43,22 @@ function workingArea(): { w: number; h: number } {
   return { w: 1440, h: 852 };
 }
 
-/** 크롬리스 앱 창을 화면 오른쪽 패널로 띄운다 (푸시를 막지 않도록 비동기 detached). 성공 시 true. */
-function openPanel(file: string): boolean {
+/** 크롬리스 앱 창을 띄운다 (푸시를 막지 않도록 비동기 detached). 성공 시 true.
+ *  mini=false: 화면 오른쪽 1/3 패널 / mini=true: 작업표시줄 위 우하단 작은 카드. */
+function openPanel(file: string, mini = false): boolean {
   const browser = findChromium();
   if (!browser) return false;
   const { w: sw, h: sh } = workingArea();
-  const pw = Math.min(760, Math.max(560, Math.round(sw / 3))); // 대략 1/3, 가독 최소 560
-  const px = sw - pw;
+  const pw = mini ? 430 : Math.min(760, Math.max(560, Math.round(sw / 3))); // 대략 1/3, 가독 최소 560
+  const ph = mini ? 200 : sh;
+  const px = mini ? sw - pw - 14 : sw - pw;
+  const py = mini ? sh - ph - 14 : 0;
   const url = 'file:///' + file.replace(/\\/g, '/');
   const profile = path.join(os.tmpdir(), 'safeship-panel-profile'); // 전용 프로필 → 항상 깨끗한 앱 창
   const args = [
     `--app=${url}`,
-    `--window-size=${pw},${sh}`,
-    `--window-position=${px},0`,
+    `--window-size=${pw},${ph}`,
+    `--window-position=${px},${py}`,
     `--user-data-dir=${profile}`,
     '--no-first-run',
     '--no-default-browser-check',
@@ -384,6 +387,170 @@ function loadProps(cockpitPath: string): Record<string, string> {
 
 /** 데스크톱 오버레이 크롬 — 창 컨트롤(닫기/투명도/드래그) + 리포트 런타임 fetch + 오른쪽 도킹 슬라이드인.
  *  정적 UI/렌더러는 index.html에 구워지고, 실제 리포트는 Tauri 커맨드 read_report로 런타임에 받는다. */
+/** 미니 UI(작업표시줄 위 작은 카드)의 스타일 + 마크업. 데스크톱 앱/브라우저 패널 공용. */
+const MINI_UI = String.raw`
+<style>
+  /* 카드 높이는 200px로 고정 — 설정을 열면 창만 아래로 늘어나고 카드는 그대로 보인다 */
+  #ss-mini { position: fixed; top: 0; left: 0; right: 0; height: 200px; display: none;
+    padding: 8px; box-sizing: border-box; z-index: 100001; }
+  body.ss-mini-mode #ss-mini { display: block; }
+  body.ss-mini-mode #app, body.ss-mini-mode #ss-drag, body.ss-mini-mode #ss-ctrl { display: none !important; }
+  body.ss-mini-mode { overflow: hidden; }
+  .m-card { height: 100%; box-sizing: border-box; border-radius: 15px; padding: 12px 14px;
+    background: linear-gradient(160deg, #161d38 0%, #0d1122 100%);
+    border: 1px solid rgba(120,140,220,.30); box-shadow: 0 12px 34px rgba(0,0,0,.55);
+    display: flex; flex-direction: column; gap: 9px; color: #cdd6ff; }
+  .m-top { display: flex; align-items: center; gap: 8px; }
+  .m-brand { font-weight: 800; font-size: 12.5px; letter-spacing: .01em; }
+  .m-x { margin-left: auto; width: 22px; height: 20px; border: none; border-radius: 6px; cursor: pointer;
+    background: rgba(255,255,255,.09); color: #cdd6ff; font-size: 11px; font-family: inherit; }
+  .m-x:hover { background: rgba(255,93,100,.85); color: #fff; }
+  .m-body { display: flex; gap: 12px; align-items: center; }
+  .m-nova { width: 54px; flex: none; filter: drop-shadow(0 5px 12px rgba(0,0,0,.5)); }
+  .m-verdict { font-weight: 800; font-size: 14.5px; margin-bottom: 3px; }
+  .m-verdict.go { color: #9ece6a; } .m-verdict.nogo { color: #ff8d92; }
+  .m-lead { font-size: 12px; color: #aab3d8; line-height: 1.45; word-break: keep-all; }
+  .m-more { font-size: 11px; color: #6b74a0; margin-top: 3px; }
+  .m-btns { display: flex; gap: 6px; margin-top: auto; }
+  .m-btn { flex: 1; padding: 8px 10px; border: none; border-radius: 9px; cursor: pointer;
+    font-size: 12px; font-weight: 700; font-family: inherit;
+    background: rgba(255,255,255,.10); color: #cdd6ff; transition: filter .15s; }
+  .m-btn.primary { background: linear-gradient(180deg, #4c6bff, #3448c9); color: #fff; }
+  .m-btn:hover { filter: brightness(1.18); }
+</style>
+<div id="ss-mini"><div class="m-card" data-tauri-drag-region>
+  <div class="m-top"><span class="m-brand">🚀 SafeShip</span><button class="m-x" id="m-close" title="닫기">✕</button></div>
+  <div class="m-body">
+    <img class="m-nova" id="m-nova" alt="관제사 NOVA">
+    <div>
+      <div class="m-verdict" id="m-verdict"></div>
+      <div class="m-lead" id="m-lead"></div>
+      <div class="m-more" id="m-more"></div>
+    </div>
+  </div>
+  <div class="m-btns"><button class="m-btn primary" id="m-detail">자세히 보기</button></div>
+</div></div>
+<script>
+// 리포트 → 미니 카드 채우기 (전체 UI에 인라인된 NOVA 이미지를 그대로 재사용)
+window.__SS_FILL_MINI = function () {
+  var R = window.SAFESHIP_REPORT || {}, s = R.summary || {};
+  var go = s.verdict === 'GO';
+  var blocks = (R.findings || []).filter(function (f) { return f.severity === 'block'; });
+  var v = document.getElementById('m-verdict');
+  v.className = 'm-verdict ' + (go ? 'go' : 'nogo');
+  v.textContent = go ? '✅ 안전합니다 · GO' : '🛑 차단 ' + (s.block || blocks.length) + '건 — push를 멈췄어요';
+  document.getElementById('m-lead').textContent = go
+    ? '안전하게 세상에 별 하나를 띄웠어요.'
+    : (blocks[0] ? blocks[0].title : '문제를 확인해 주세요.');
+  var more = blocks.length - 1;
+  document.getElementById('m-more').textContent = (!go && more > 0) ? '+ ' + more + '건 더' : '';
+  var pick = go
+    ? (document.querySelector('.cap-nova img') || document.querySelector('.fin-nova .salute'))
+    : (document.querySelector('.fin-nova .sad') || document.querySelector('.intro-nova img'));
+  var src = pick && pick.getAttribute('src');
+  if (src) document.getElementById('m-nova').setAttribute('src', src);
+  return go;
+};
+</script>`;
+
+/** 표시 방식 설정 UI(톱니 + 팝오버). 데스크톱 앱/브라우저 패널 공용.
+ *  두 경로가 각각 구현해 넘겨주는 훅에 의존한다:
+ *   - window.__SS_APPLY_MODE(mode) : 지금 창을 그 모양으로 바꾼다 (필수)
+ *   - window.__SS_SAVE_MODE(mode)  : 기본값으로 저장 (없으면 터미널 명령으로 안내) */
+const SETTINGS_UI = String.raw`
+<style>
+  /* 전체 화면에서는 상단 칩들을 가리지 않도록 우하단에 띄운다 */
+  #ss-gear { position: fixed; bottom: 14px; right: 14px; z-index: 100002;
+    width: 32px; height: 32px; border: none; border-radius: 50%; cursor: pointer;
+    background: rgba(26,33,64,.86); color: #cdd6ff; font-size: 14px; line-height: 1; font-family: inherit;
+    border: 1px solid rgba(120,140,220,.28);
+    backdrop-filter: blur(6px); box-shadow: 0 4px 14px rgba(0,0,0,.45); transition: background .15s; }
+  #ss-gear:hover { background: rgba(48,60,108,.95); }
+  /* 미니에서는 카드 헤더의 ✕ 옆으로 */
+  body.ss-mini-mode #ss-gear { bottom: auto; top: 17px; right: 44px;
+    width: 22px; height: 20px; border-radius: 6px; font-size: 11px;
+    background: rgba(255,255,255,.09); border-color: transparent; box-shadow: none; }
+  #ss-pop { position: fixed; bottom: 54px; right: 14px; z-index: 100003; width: 262px;
+    background: linear-gradient(160deg, #1a2140, #11162b); color: #cdd6ff;
+    border: 1px solid rgba(120,140,220,.32); border-radius: 13px; padding: 11px;
+    box-shadow: 0 14px 36px rgba(0,0,0,.6); display: flex; flex-direction: column; gap: 6px; }
+  #ss-pop[hidden] { display: none; }
+  /* 미니에서는 카드 바로 아래에 붙여 카드를 가리지 않는다 (창이 그만큼 늘어남) */
+  body.ss-mini-mode #ss-pop { top: 204px; left: 10px; right: 10px; bottom: auto; width: auto; }
+  .p-title { font-size: 11.5px; color: #8f99c4; font-weight: 700; margin-bottom: 2px; }
+  .p-opt { text-align: left; border: 1px solid transparent; border-radius: 9px; padding: 8px 10px;
+    background: rgba(255,255,255,.055); color: #cdd6ff; cursor: pointer; font-family: inherit;
+    display: flex; flex-direction: column; gap: 2px; transition: background .15s, border-color .15s; }
+  .p-opt:hover { background: rgba(255,255,255,.11); }
+  .p-opt.on { border-color: #4c6bff; background: rgba(76,107,255,.17); }
+  .p-opt b { font-size: 12.5px; font-weight: 800; }
+  .p-opt b::after { content: ''; }
+  .p-opt.on b::after { content: '  ✓'; color: #7f9cff; }
+  .p-opt span { font-size: 11px; color: #98a2cc; }
+  .p-note { font-size: 10.5px; line-height: 1.5; color: #8f99c4; margin-top: 2px; word-break: keep-all; }
+  .p-note.ok { color: #9ece6a; }
+  .p-note code { background: rgba(255,255,255,.10); padding: 1px 5px; border-radius: 4px;
+    font-size: 10px; user-select: all; }
+</style>
+<button id="ss-gear" title="표시 방식 설정">⚙</button>
+<div id="ss-pop" hidden>
+  <div class="p-title">다음부터 이렇게 보여드릴까요?</div>
+  <button class="p-opt" data-mode="full"><b>전체 화면</b><span>함선을 둘러보며 자세히</span></button>
+  <button class="p-opt" data-mode="mini"><b>미니 카드</b><span>작업표시줄 위에 작게</span></button>
+  <div class="p-note" id="ss-pop-note">지금 창에도 바로 적용돼요.</div>
+</div>
+<script>
+(function () {
+  var gear = document.getElementById('ss-gear');
+  var pop = document.getElementById('ss-pop');
+  var note = document.getElementById('ss-pop-note');
+  var opts = [].slice.call(pop.querySelectorAll('.p-opt'));
+
+  function mark() {
+    var cur = document.body.classList.contains('ss-mini-mode') ? 'mini' : 'full';
+    opts.forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-mode') === cur); });
+  }
+  gear.addEventListener('click', function (e) {
+    e.stopPropagation();
+    // 설정을 만지는 중엔 GO 자동 닫힘을 멈춘다
+    if (window.__ssAutoClose) { clearTimeout(window.__ssAutoClose); window.__ssAutoClose = null; }
+    pop.hidden = !pop.hidden;
+    mark();
+    sync();
+  });
+  document.addEventListener('click', function (e) {
+    if (!pop.hidden && !pop.contains(e.target) && e.target !== gear) { pop.hidden = true; sync(); }
+  });
+
+  // 미니에서 설정을 열면 창을 늘려 카드 아래에 펼친다 (호스트가 __SS_POPOVER를 구현)
+  function sync() { try { window.__SS_POPOVER && window.__SS_POPOVER(!pop.hidden); } catch (e) {} }
+
+  opts.forEach(function (b) {
+    b.addEventListener('click', function () {
+      var m = b.getAttribute('data-mode');
+      try { window.__SS_APPLY_MODE && window.__SS_APPLY_MODE(m); } catch (e) { console.error(e); }
+      mark();
+      sync(); // 모드가 바뀌면 창 크기도 다시 맞춘다
+      if (window.__SS_SAVE_MODE) {
+        Promise.resolve(window.__SS_SAVE_MODE(m)).then(function () {
+          note.className = 'p-note ok';
+          note.textContent = '저장했어요 — 다음 push부터 이렇게 보여드릴게요.';
+        }, function (err) {
+          note.className = 'p-note';
+          note.textContent = '저장하지 못했어요: ' + err;
+        });
+      } else {
+        // 브라우저 패널은 파일을 쓸 수 없다 → 같은 일을 하는 명령을 안내
+        note.className = 'p-note';
+        note.innerHTML = '이 창에만 적용됐어요. 계속 이렇게 보려면 터미널에서 <code>safeship config ui '
+          + m + '</code>';
+      }
+    });
+  });
+  mark();
+})();
+</script>`;
+
 const OVERLAY_CHROME = String.raw`
 <style>
   #ss-ctrl { position: fixed; top: 6px; right: 8px; z-index: 100000; display: flex; gap: 5px; }
@@ -399,55 +566,108 @@ const OVERLAY_CHROME = String.raw`
   <button id="ss-op" title="투명도 조절">◐</button>
   <button id="ss-close" title="닫기">✕</button>
 </div>
+` + MINI_UI + SETTINGS_UI + String.raw`
 <script>
 (async function () {
   var T = window.__TAURI__;
-  // 1) 실제 리포트를 런타임에 받아 주입 (없으면 데모/빈 상태로 렌더)
+  var P = {};
+  // 1) 실제 리포트를 런타임에 받아 주입
   if (T && T.core && T.core.invoke) {
     try {
-      var raw = await T.core.invoke('read_report');
-      var p = JSON.parse(raw || '{}');
-      if (p && p.report) { window.SAFESHIP_REPORT = p.report; window.SAFESHIP_CELEBRATE = !!p.celebrate; }
+      P = JSON.parse((await T.core.invoke('read_report')) || '{}');
+      if (P && P.report) { window.SAFESHIP_REPORT = P.report; window.SAFESHIP_CELEBRATE = !!P.celebrate; }
     } catch (e) { console.error('read_report:', e); }
   }
+  // 전체 UI는 미리 렌더해둔다 (미니에서 '자세히 보기' 누르면 바로 펼쳐지게)
   try { window.__SAFESHIP_RENDER && window.__SAFESHIP_RENDER(); } catch (e) { console.error('render:', e); }
 
-  var ctrl = document.getElementById('ss-ctrl');
-  var drag = document.getElementById('ss-drag');
-  if (!T || !T.window) { if (ctrl) ctrl.style.display = 'none'; if (drag) drag.style.display = 'none'; return; }
-  var W = T.window;
-  var win = W.getCurrentWindow();
+  var ctrl = document.getElementById('ss-ctrl'), drag = document.getElementById('ss-drag');
+  var miniEl = document.getElementById('ss-mini'), gearEl = document.getElementById('ss-gear');
+  if (!T || !T.window) {
+    // 데스크톱 index.html을 일반 브라우저로 연 경우 — 창 제어를 못 하니 크롬을 숨긴다
+    [ctrl, drag, miniEl, gearEl].forEach(function (el) { if (el) el.style.display = 'none'; });
+    return;
+  }
+  var W = T.window, win = W.getCurrentWindow();
 
-  // 2) 창 컨트롤: 투명도 순환 + 닫기
+  // 창 컨트롤(전체 UI)
   var ops = [1, 0.85, 0.7], oi = 0;
   document.getElementById('ss-op').addEventListener('click', function () {
     oi = (oi + 1) % ops.length; document.documentElement.style.opacity = ops[oi];
   });
   document.getElementById('ss-close').addEventListener('click', function () { win.close(); });
+  document.getElementById('m-close').addEventListener('click', function () { win.close(); });
 
-  // 3) 오른쪽 도킹 + 왼쪽으로 슬라이드인
-  try {
+  // 화면 크기: payload의 작업영역(작업표시줄 제외) 우선 → 미니가 작업표시줄 위에 정확히 앉는다
+  var sw, sh;
+  if (P.screen && P.screen.w) { sw = P.screen.w; sh = P.screen.h; }
+  else {
     var mon = await W.currentMonitor();
     if (!mon) { var all = await W.availableMonitors(); mon = all && all[0]; }
     var sf = (mon && mon.scaleFactor) || 1;
-    var sw = Math.round((mon ? mon.size.width : 1440) / sf);
-    var sh = Math.round((mon ? mon.size.height : 900) / sf);
-    var pw = Math.min(760, Math.max(560, Math.round(sw / 3)));
-    await win.setSize(new W.LogicalSize(pw, sh));
-    var targetX = sw - pw;
-    await win.setPosition(new W.LogicalPosition(sw, 0));
-    await win.show();
-    try { await win.setAlwaysOnTop(true); } catch (e) {}
-    var start = null, dur = 440;
+    sw = Math.round((mon ? mon.size.width : 1440) / sf);
+    sh = Math.round((mon ? mon.size.height : 900) / sf) - 48; // 작업표시줄 여유
+  }
+
+  function slideX(fromX, toX, y, dur) {
+    var t0 = null;
     function step(ts) {
-      if (start === null) start = ts;
-      var pr = Math.min(1, (ts - start) / dur);
+      if (t0 === null) t0 = ts;
+      var pr = Math.min(1, (ts - t0) / (dur || 420));
       var e = 1 - Math.pow(1 - pr, 3);
-      win.setPosition(new W.LogicalPosition(Math.round(sw + (targetX - sw) * e), 0));
+      win.setPosition(new W.LogicalPosition(Math.round(fromX + (toX - fromX) * e), y));
       if (pr < 1) requestAnimationFrame(step);
     }
     requestAnimationFrame(step);
-  } catch (e) { console.error('slide-in:', e); }
+    setTimeout(function () { win.setPosition(new W.LogicalPosition(toX, y)); }, (dur || 420) + 220);
+  }
+
+  // ── 전체 UI: 오른쪽 1/3 도킹 ──
+  async function showFull(animate) {
+    document.body.classList.remove('ss-mini-mode');
+    if (window.__ssAutoClose) { clearTimeout(window.__ssAutoClose); window.__ssAutoClose = null; }
+    var pw = Math.min(760, Math.max(560, Math.round(sw / 3)));
+    var tx = sw - pw;
+    await win.setSize(new W.LogicalSize(pw, sh));
+    if (animate) { await win.setPosition(new W.LogicalPosition(sw, 0)); await win.show(); slideX(sw, tx, 0); }
+    else { await win.setPosition(new W.LogicalPosition(tx, 0)); await win.show(); }
+    try { await win.setAlwaysOnTop(true); } catch (e) {}
+  }
+
+  // ── 미니 UI: 작업표시줄 위 우하단 카드 ──
+  async function showMini(animate) {
+    document.body.classList.add('ss-mini-mode');
+    var isGo = window.__SS_FILL_MINI();
+    var mw = 430, mh = 200, gap = 14;
+    var tx = sw - mw - gap, ty = sh - mh - gap;
+    await win.setSize(new W.LogicalSize(mw, mh));
+    if (animate) { await win.setPosition(new W.LogicalPosition(sw, ty)); await win.show(); slideX(sw, tx, ty); }
+    else { await win.setPosition(new W.LogicalPosition(tx, ty)); await win.show(); }
+    try { await win.setAlwaysOnTop(true); } catch (e) {}
+    // 통과했으면 잠깐 보여주고 스스로 사라짐 (방해 최소화)
+    if (isGo) window.__ssAutoClose = setTimeout(function () {
+      if (document.body.classList.contains('ss-mini-mode')) win.close();
+    }, 6500);
+  }
+
+  // 설정 UI가 쓰는 훅: 지금 창 모양 바꾸기 + 기본값 저장(~/.safeship.json)
+  window.__SS_APPLY_MODE = function (mode) {
+    return mode === 'mini' ? showMini(false) : showFull(false);
+  };
+  window.__SS_SAVE_MODE = function (mode) { return T.core.invoke('save_ui_mode', { mode: mode }); };
+  // 미니에서 설정을 펼치면 창을 아래로 늘려 카드를 가리지 않게 한다
+  window.__SS_POPOVER = async function (open) {
+    if (!document.body.classList.contains('ss-mini-mode')) return;
+    var mw = 430, gap = 14, h = open ? 412 : 200;
+    await win.setSize(new W.LogicalSize(mw, h));
+    await win.setPosition(new W.LogicalPosition(sw - mw - gap, sh - h - gap));
+  };
+
+  // 미니 → 전체로 펼치기
+  document.getElementById('m-detail').addEventListener('click', function () { showFull(false); });
+
+  try { if (P.mini) await showMini(true); else await showFull(true); }
+  catch (e) { console.error('overlay layout:', e); }
 })();
 </script>
 </body>`;
@@ -478,10 +698,11 @@ function findOverlayExe(): string | null {
 
 /** pre-push 훅용: Tauri 오버레이 앱을 실제 스캔 payload와 함께 띄운다. 성공 시 true.
  *  앱이 없으면 false → 호출부가 브라우저 패널로 폴백. */
-export function openOverlayApp(report: Report, opts?: { celebrate?: boolean }): boolean {
+export function openOverlayApp(report: Report, opts?: { celebrate?: boolean; mini?: boolean }): boolean {
   const exe = findOverlayExe();
   if (!exe) return false;
-  const payload = { report, celebrate: !!opts?.celebrate };
+  // screen: 작업표시줄을 제외한 작업영역 — 미니 카드가 작업표시줄 위에 정확히 앉도록 함께 넘긴다
+  const payload = { report, celebrate: !!opts?.celebrate, mini: !!opts?.mini, screen: workingArea() };
   const file = path.join(os.tmpdir(), `safeship-payload-${Date.now()}.json`);
   try {
     fs.writeFileSync(file, JSON.stringify(payload), 'utf8');
@@ -515,7 +736,7 @@ export function renderDesktopIndex(): string {
 
 /** 리포트를 주입한 관제탑 HTML을 만들어 기본 브라우저로 연다. 성공 시 파일 경로 반환.
  *  opts.celebrate: GO push 축하 모드 — 피날레로 이동해 발사→별 연출을 자동 재생. */
-export function openCockpit(report: Report, opts?: { celebrate?: boolean }): string | null {
+export function openCockpit(report: Report, opts?: { celebrate?: boolean; mini?: boolean }): string | null {
   const cockpitPath = findCockpit();
   if (!cockpitPath) return null;
   const html = fs.readFileSync(cockpitPath, 'utf8');
@@ -528,14 +749,49 @@ export function openCockpit(report: Report, opts?: { celebrate?: boolean }): str
     `window.SAFESHIP_UNKNOWN_VIGNETTES=${safe(UNKNOWN_VIGNETTES)};` +
     `window.SAFESHIP_PROPS=${safe(props)};` +
     `window.SAFESHIP_CELEBRATE=${opts?.celebrate ? 'true' : 'false'};`;
-  const inject = `<script>${data}</script>\n<script>${RENDERER}</script>\n<script>window.__SAFESHIP_RENDER&&window.__SAFESHIP_RENDER();</script>\n</body>`;
+  // 미니 모드: 전체 UI는 렌더해두고 작은 카드만 보여준다 ('자세히 보기'로 창을 키워 펼침)
+  const { w: sw, h: sh } = workingArea();
+  const fullW = Math.min(760, Math.max(560, Math.round(sw / 3)));
+  // 브라우저 패널도 두 모드를 다 갖고 시작 모드만 다르게 — 설정 버튼으로 즉시 오갈 수 있게
+  const panelBoot = String.raw`
+<script>(function () {
+  var SW = ${sw}, SH = ${sh}, FW = ${fullW}, MW = 430, MH = 200, GAP = 14;
+  window.__SS_APPLY_MODE = function (mode) {
+    if (window.__ssAutoClose) { clearTimeout(window.__ssAutoClose); window.__ssAutoClose = null; }
+    if (mode === 'mini') {
+      document.body.classList.add('ss-mini-mode');
+      var go = window.__SS_FILL_MINI();
+      try { window.resizeTo(MW, MH); window.moveTo(SW - MW - GAP, SH - MH - GAP); } catch (e) {}
+      if (go) window.__ssAutoClose = setTimeout(function () {
+        if (document.body.classList.contains('ss-mini-mode')) window.close();
+      }, 6500);
+    } else {
+      document.body.classList.remove('ss-mini-mode');
+      try { window.resizeTo(FW, SH); window.moveTo(SW - FW, 0); } catch (e) {}
+    }
+  };
+  window.__SS_POPOVER = function (open) {
+    if (!document.body.classList.contains('ss-mini-mode')) return;
+    var h = open ? 412 : MH;
+    try { window.resizeTo(MW, h); window.moveTo(SW - MW - GAP, SH - h - GAP); } catch (e) {}
+  };
+  // 브라우저 패널은 설정 파일을 쓸 수 없다 → __SS_SAVE_MODE를 두지 않으면 설정 UI가 명령을 안내한다
+  document.getElementById('m-close').addEventListener('click', function () { window.close(); });
+  document.getElementById('m-detail').addEventListener('click', function () { window.__SS_APPLY_MODE('full'); });
+  window.__SS_APPLY_MODE(${opts?.mini ? "'mini'" : "'full'"});
+})();</script>`;
+  const inject =
+    `<script>${data}</script>\n<script>${RENDERER}</script>\n` +
+    `<script>window.__SAFESHIP_RENDER&&window.__SAFESHIP_RENDER();</script>\n` +
+    MINI_UI + SETTINGS_UI + panelBoot +
+    `\n</body>`;
   const out = html.replace('</body>', inject);
   const file = path.join(os.tmpdir(), `safeship-cockpit-${Date.now()}.html`);
   fs.writeFileSync(file, out, 'utf8');
 
   if (process.env.SAFESHIP_NO_OPEN) return file; // 테스트용: 생성만 하고 열지 않음
-  // 1순위: 크롬리스 앱 창(오른쪽 패널). 실패 시 기본 브라우저로 폴백.
-  if (openPanel(file)) return file;
+  // 1순위: 크롬리스 앱 창(오른쪽 패널 또는 우하단 미니). 실패 시 기본 브라우저로 폴백.
+  if (openPanel(file, !!opts?.mini)) return file;
   const platform = process.platform;
   if (platform === 'win32') spawnSync('cmd', ['/c', 'start', '', file], { stdio: 'ignore' });
   else if (platform === 'darwin') spawnSync('open', [file], { stdio: 'ignore' });
